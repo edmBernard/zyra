@@ -6,7 +6,6 @@ const version = "Naval Fate 1.0.0";
 const NavalFate = union(enum) {
     ship: ShipCommand,
     mine: MineCommand,
-    help: Empty,
     version: Empty,
 
     pub const zyra = .{
@@ -15,7 +14,6 @@ const NavalFate = union(enum) {
         .commands = .{
             .ship = .{ .help = "Create, move, or fire a ship" },
             .mine = .{ .help = "Set or remove a mine" },
-            .help = .{ .help = "Show this help" },
             .version = .{ .help = "Show version information" },
         },
     };
@@ -60,14 +58,25 @@ const MineArgs = struct {
 
 pub fn main(init: std.process.Init) !u8 {
     var diagnostic: zyra.Diagnostic = undefined;
-    const command = zyra.parseProcess(NavalFate, init, .{ .diagnostic = &diagnostic }) catch |err| switch (err) {
+    const command = zyra.parseProcess(NavalFate, init, .{
+        .diagnostic = &diagnostic,
+        .auto_help = true,
+    }) catch |err| switch (err) {
         error.OutOfMemory => return err,
+        error.HelpRequested => {
+            var stdout_buffer: [1024]u8 = undefined;
+            var stdout_file_writer: std.Io.File.Writer = .init(.stdout(), init.io, &stdout_buffer);
+            const stdout = &stdout_file_writer.interface;
+            try zyra.writeHelpForProcess(NavalFate, init, stdout, .{});
+            try stdout.flush();
+            return 0;
+        },
         else => {
             var stderr_buffer: [1024]u8 = undefined;
             var stderr_file_writer: std.Io.File.Writer = .init(.stderr(), init.io, &stderr_buffer);
             const stderr = &stderr_file_writer.interface;
             try zyra.writeDiagnostic(diagnostic, stderr);
-            try stderr.writeAll("\nTry 'naval_fate help' for usage.\n");
+            try stderr.writeAll("\nTry 'naval_fate --help' for usage.\n");
             try stderr.flush();
             return 2;
         },
@@ -83,7 +92,6 @@ pub fn main(init: std.process.Init) !u8 {
 
 fn execute(command: NavalFate, stdout: *std.Io.Writer) std.Io.Writer.Error!void {
     switch (command) {
-        .help => try zyra.writeHelp(NavalFate, stdout, .{}),
         .version => try stdout.print("{s}\n", .{version}),
         .ship => |ship| switch (ship) {
             .new => |args| try stdout.print("Creating ship {s}.\n", .{args.name}),
@@ -127,7 +135,13 @@ test "defaults and nullable enums parse naturally" {
     try std.testing.expectEqual(.drifting, mine.mine.set.kind.?);
 }
 
-test "help and version are ordinary commands" {
-    try std.testing.expectEqual(.help, std.meta.activeTag(try zyra.parse(NavalFate, &.{ "naval_fate", "help" }, .{})));
+test "--help is intercepted at any depth when auto_help is enabled" {
+    const with_help: zyra.ParseOptions = .{ .auto_help = true };
+    try std.testing.expectError(error.HelpRequested, zyra.parse(NavalFate, &.{ "naval_fate", "--help" }, with_help));
+    try std.testing.expectError(error.HelpRequested, zyra.parse(NavalFate, &.{ "naval_fate", "ship", "--help" }, with_help));
+    try std.testing.expectError(error.HelpRequested, zyra.parse(NavalFate, &.{ "naval_fate", "ship", "move", "-h" }, with_help));
+}
+
+test "version is an ordinary command" {
     try std.testing.expectEqual(.version, std.meta.activeTag(try zyra.parse(NavalFate, &.{ "naval_fate", "version" }, .{})));
 }

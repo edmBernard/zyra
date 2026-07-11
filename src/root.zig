@@ -9,6 +9,7 @@ pub const ParseError = error{
     InvalidValue,
     DuplicateArgument,
     UnexpectedPositional,
+    HelpRequested,
 };
 
 pub const Diagnostic = struct {
@@ -20,6 +21,10 @@ pub const Diagnostic = struct {
 
 pub const ParseOptions = struct {
     diagnostic: ?*Diagnostic = null,
+    /// When enabled, an unmatched `--help` or `-h` makes `parse` return
+    /// `error.HelpRequested`. Declared names take precedence, so a field
+    /// named `help` or one with an `h` short alias keeps its meaning.
+    auto_help: bool = false,
 };
 
 pub const HelpOptions = struct {
@@ -88,6 +93,8 @@ fn parseUnion(
             return @unionInit(T, field.name, payload);
         }
     }
+    if (options.auto_help and (std.mem.eql(u8, command, "--help") or std.mem.eql(u8, command, "-h")))
+        return fail(options, error.HelpRequested, base_index, command, null);
     return fail(options, error.UnknownCommand, base_index, command, "command");
 }
 
@@ -154,7 +161,11 @@ fn parseStruct(
                     }
                 }
             }
-            if (!matched) return fail(options, error.UnknownOption, base_index + i, token, option_name);
+            if (!matched) {
+                if (options.auto_help and std.mem.eql(u8, option_name, "help"))
+                    return fail(options, error.HelpRequested, base_index + i, token, null);
+                return fail(options, error.UnknownOption, base_index + i, token, option_name);
+            }
             continue;
         }
 
@@ -190,7 +201,11 @@ fn parseStruct(
                     }
                 }
             }
-            if (!matched) return fail(options, error.UnknownOption, base_index + i, token, token[1..]);
+            if (!matched) {
+                if (options.auto_help and option_name == 'h')
+                    return fail(options, error.HelpRequested, base_index + i, token, null);
+                return fail(options, error.UnknownOption, base_index + i, token, token[1..]);
+            }
             continue;
         }
 
@@ -294,6 +309,7 @@ pub fn writeDiagnostic(diagnostic: Diagnostic, writer: *std.Io.Writer) std.Io.Wr
         error.InvalidValue => try writer.print("invalid value '{?s}' for '{?s}'", .{ diagnostic.token, diagnostic.subject }),
         error.DuplicateArgument => try writer.print("argument '{?s}' was provided more than once", .{diagnostic.subject}),
         error.UnexpectedPositional => try writer.print("unexpected positional argument '{?s}'", .{diagnostic.token}),
+        error.HelpRequested => try writer.writeAll("help requested"),
     }
 }
 
@@ -305,16 +321,68 @@ pub fn writeHelp(
     options: HelpOptions,
 ) std.Io.Writer.Error!void {
     comptime validateSchema(T);
-    const program_name = options.program_name orelse schemaName(T) orelse "program";
+    try writer.print("Usage: {s}", .{programName(T, options)});
+    try writeHelpBody(T, writer);
+}
 
+/// Generates help for the deepest subcommand named by `argv`, so
+/// `program ship --help` documents `ship`. Falls back to the root help when
+/// `argv` names no subcommand. The executable name at argv[0] is ignored.
+pub fn writeHelpForArgs(
+    comptime T: type,
+    argv: []const []const u8,
+    writer: *std.Io.Writer,
+    options: HelpOptions,
+) std.Io.Writer.Error!void {
+    return writeHelpForArgsImpl(T, argv, writer, options);
+}
+
+/// Acquires the current process arguments using `init.arena` and generates
+/// help for the subcommand they name, as `writeHelpForArgs` does.
+pub fn writeHelpForProcess(
+    comptime T: type,
+    init: std.process.Init,
+    writer: *std.Io.Writer,
+    options: HelpOptions,
+) !void {
+    const argv = try init.minimal.args.toSlice(init.arena.allocator());
+    return writeHelpForArgsImpl(T, argv, writer, options);
+}
+
+fn writeHelpForArgsImpl(
+    comptime T: type,
+    argv: anytype,
+    writer: *std.Io.Writer,
+    options: HelpOptions,
+) std.Io.Writer.Error!void {
+    comptime validateSchema(T);
+    try writer.print("Usage: {s}", .{programName(T, options)});
+    const tokens = if (argv.len == 0) argv else argv[1..];
+    try writeHelpWalk(T, tokens, writer);
+}
+
+fn writeHelpWalk(comptime T: type, tokens: anytype, writer: *std.Io.Writer) std.Io.Writer.Error!void {
+    if (@typeInfo(T) == .@"union" and tokens.len > 0) {
+        inline for (std.meta.fields(T)) |field| {
+            if (commandNameMatches(T, field.name, tokens[0])) {
+                try writer.writeByte(' ');
+                try writeCliName(writer, commandDisplayName(T, field.name));
+                return writeHelpWalk(field.type, tokens[1..], writer);
+            }
+        }
+    }
+    try writeHelpBody(T, writer);
+}
+
+fn writeHelpBody(comptime T: type, writer: *std.Io.Writer) std.Io.Writer.Error!void {
     switch (@typeInfo(T)) {
         .@"struct" => {
-            try writer.print("Usage: {s} [options] [arguments]\n", .{program_name});
+            try writer.writeAll(" [options] [arguments]\n");
             if (schemaAbout(T)) |about| try writer.print("\n{s}\n", .{about});
             try writeStructHelp(T, writer);
         },
         .@"union" => {
-            try writer.print("Usage: {s} <command> [options] [arguments]\n", .{program_name});
+            try writer.writeAll(" <command> [options] [arguments]\n");
             if (schemaAbout(T)) |about| try writer.print("\n{s}\n", .{about});
             try writer.writeAll("\nCommands:\n");
             inline for (std.meta.fields(T)) |field| {
@@ -326,6 +394,10 @@ pub fn writeHelp(
         },
         else => unreachable,
     }
+}
+
+fn programName(comptime T: type, options: HelpOptions) []const u8 {
+    return options.program_name orelse schemaName(T) orelse "program";
 }
 
 fn writeStructHelp(comptime T: type, writer: *std.Io.Writer) std.Io.Writer.Error!void {
@@ -374,7 +446,20 @@ fn writeStructHelp(comptime T: type, writer: *std.Io.Writer) std.Io.Writer.Error
 
 fn writeDefault(comptime field: std.builtin.Type.StructField, writer: *std.Io.Writer) std.Io.Writer.Error!void {
     if (comptime field.defaultValue()) |default| {
-        try writer.print(" (default: {any})", .{default});
+        try writer.writeAll(" (default: ");
+        try writeDefaultValue(default, writer);
+        try writer.writeByte(')');
+    }
+}
+
+// Renders a default in the syntax the user would type on the command line:
+// strings verbatim and enums without their leading dot.
+fn writeDefaultValue(value: anytype, writer: *std.Io.Writer) std.Io.Writer.Error!void {
+    switch (@typeInfo(@TypeOf(value))) {
+        .optional => if (value) |child| try writeDefaultValue(child, writer) else try writer.writeAll("null"),
+        .pointer => try writer.print("{s}", .{value}),
+        .@"enum" => try writer.writeAll(@tagName(value)),
+        else => try writer.print("{any}", .{value}),
     }
 }
 
@@ -498,7 +583,11 @@ fn commandNameMatches(comptime T: type, comptime field_name: []const u8, input: 
 fn validateSchema(comptime T: type) void {
     switch (@typeInfo(T)) {
         .@"struct" => {
-            inline for (std.meta.fields(T)) |field| validateValueType(field.type);
+            inline for (std.meta.fields(T)) |field| {
+                validateValueType(field.type);
+                if (field.defaultValue() == null and !fieldIsNamed(T, field.name) and !fieldIsPositional(T, field.name))
+                    @compileError("Zyra field '" ++ field.name ++ "' is required but neither named nor positional");
+            }
             validateFieldMetadata(T);
             validateAliases(T);
         },
@@ -720,6 +809,63 @@ test "help is generated from schema and metadata" {
     try std.testing.expect(std.mem.indexOf(u8, help, "Metadata example.") != null);
     try std.testing.expect(std.mem.indexOf(u8, help, "-c, --count <N>") != null);
     try std.testing.expect(std.mem.indexOf(u8, help, "--output-path") != null);
+}
+
+test "auto_help intercepts unmatched --help and -h at any level" {
+    const with_help: ParseOptions = .{ .auto_help = true };
+    try std.testing.expectError(error.HelpRequested, parse(PairArgs, &.{ "program", "--help" }, with_help));
+    try std.testing.expectError(error.HelpRequested, parse(PairArgs, &.{ "program", "1", "-h" }, with_help));
+    try std.testing.expectError(error.HelpRequested, parse(Commands, &.{ "program", "--help" }, with_help));
+    try std.testing.expectError(error.HelpRequested, parse(Commands, &.{ "program", "run", "--help" }, with_help));
+}
+
+test "auto_help is off by default" {
+    try std.testing.expectError(error.UnknownOption, parse(PairArgs, &.{ "program", "--help" }, .{}));
+    try std.testing.expectError(error.UnknownOption, parse(PairArgs, &.{ "program", "1", "-h" }, .{}));
+    try std.testing.expectError(error.UnknownCommand, parse(Commands, &.{ "program", "--help" }, .{}));
+}
+
+test "declared fields take precedence over auto_help" {
+    const Claimed = struct {
+        help: bool = false,
+        hint: i32 = 0,
+
+        pub const zyra = .{ .fields = .{ .hint = .{ .short = 'h', .positional = false } } };
+    };
+    const args = try parse(Claimed, &.{ "program", "--help", "-h", "3" }, .{ .auto_help = true });
+    try std.testing.expect(args.help);
+    try std.testing.expectEqual(@as(i32, 3), args.hint);
+}
+
+test "writeHelpForArgs documents the named subcommand" {
+    var output: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer output.deinit();
+    try writeHelpForArgs(Commands, &.{ "program", "run", "--help" }, &output.writer, .{});
+    const help = output.writer.buffered();
+    try std.testing.expect(std.mem.indexOf(u8, help, "Usage: program run [options] [arguments]") != null);
+    try std.testing.expect(std.mem.indexOf(u8, help, "--target") != null);
+    try std.testing.expect(std.mem.indexOf(u8, help, "--verbose") != null);
+
+    output.clearRetainingCapacity();
+    try writeHelpForArgs(Commands, &.{ "program", "--help" }, &output.writer, .{});
+    const root_help = output.writer.buffered();
+    try std.testing.expect(std.mem.indexOf(u8, root_help, "Usage: program <command>") != null);
+}
+
+const DefaultArgs = struct {
+    output: []const u8 = "out.txt",
+    label: ?[]const u8 = null,
+    mode: enum { fast, safe } = .safe,
+};
+
+test "defaults render in command-line syntax" {
+    var output: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer output.deinit();
+    try writeHelp(DefaultArgs, &output.writer, .{});
+    const help = output.writer.buffered();
+    try std.testing.expect(std.mem.indexOf(u8, help, "(default: out.txt)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, help, "(default: null)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, help, "(default: safe)") != null);
 }
 
 const NamedCommands = union(enum) {

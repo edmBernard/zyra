@@ -71,6 +71,14 @@ retain the argument index, token, and related field, then use `writeDiagnostic`
 to render it. `writeHelp` writes generated help to any `*std.Io.Writer` and
 never prints or exits on its own.
 
+With `.auto_help = true` in `ParseOptions`, an unmatched `--help` or `-h`
+anywhere on the command line makes `parse` return `error.HelpRequested`.
+Declared names take precedence, so a field named `help` or one with an `h`
+short alias keeps its ordinary meaning. To respond, `writeHelpForArgs` renders
+help for the deepest subcommand named by the arguments (`program ship --help`
+documents `ship`), and `writeHelpForProcess` is the `std.process.Init`
+convenience.
+
 `parse` accepts an existing `[]const []const u8` and does no allocation.
 `parseProcess` is a convenience for Zig 0.16's `std.process.Init`; acquiring
 cross-platform process arguments may allocate from `init.arena`, but the
@@ -86,7 +94,7 @@ pub fn parseZyra(raw: []const u8) !@This() { ... }
 
 ```sh
 zig build test
-zig build run -- help
+zig build run -- --help
 zig build run -- ship new Enterprise
 zig build run -- ship move Enterprise 10 20 --speed 25
 zig build run -- mine set 4 5 --kind moored
@@ -94,9 +102,13 @@ zig build run -- mine set 4 5 --kind moored
 
 ## Acknowledgment
 
-This library is inspired by the [Clara](https://github.com/catchorg/Clara) and [Lyra](https://github.com/bfgroup/Lyra) cli.
-I really like their API and wanted something similar in Zig and also use the Zig ability to perform comptime.
+This library is inspired by the [Clara](https://github.com/catchorg/Clara) and [Lyra](https://github.com/bfgroup/Lyra) CLI libraries.
+I really like their API and wanted something similar in Zig that also uses Zig's comptime abilities.
 
 ## Disclaimer
 
-Yes, Yes, it's completly vibe coded. I just design the API and let the LLM implement it. I still read the generated code but not really carefuly.
+Yes, yes, it's completely vibe coded. I just designed the API and let the LLM implement it. I still read the generated code but not really carefully.
+
+## License
+
+Licensed under the [Apache License, Version 2.0](LICENSE).
