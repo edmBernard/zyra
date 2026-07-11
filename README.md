@@ -92,6 +92,11 @@ zig build run -- ship move Enterprise 10 20 --speed 25
 zig build run -- mine set 4 5 --kind moored
 ```
 
+## Acknowledgment
+
+This library is inspired by the [Clara](https://github.com/catchorg/Clara) and [Lyra](https://github.com/bfgroup/Lyra) cli.
+I really like their API and wanted something similar in Zig and also use the Zig ability to perform comptime.
+
 ## Disclaimer
 
 Yes, Yes, it's completly vibe coded. I just design the API and let the LLM implement it. I still read the generated code but not really carefuly.
