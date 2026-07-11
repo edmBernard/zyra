@@ -1,0 +1,10 @@
+# Platform
+.DS_Store
+
+# IDE
+.vscode
+.claude
+
+# Language
+.zig-cache
+/zig-out
