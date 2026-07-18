@@ -411,7 +411,13 @@ fn writeStructHelp(comptime T: type, writer: *std.Io.Writer) std.Io.Writer.Error
         try writer.writeAll("\nArguments:\n");
         inline for (fields) |field| {
             if (fieldIsPositional(T, field.name)) {
-                try writer.print("  <{s}>\t{s}", .{ fieldValueName(T, field.name), @typeName(field.type) });
+                try writer.print("  <{s}>\t", .{fieldValueName(T, field.name)});
+                if (comptime valueEnum(field.type)) |Enum| {
+                    try writer.writeAll("one of ");
+                    try writeEnumValues(Enum, writer);
+                } else {
+                    try writer.writeAll(@typeName(field.type));
+                }
                 if (fieldHelp(T, field.name)) |help| try writer.print(" - {s}", .{help});
                 try writeDefault(field, writer);
                 try writer.writeByte('\n');
@@ -437,10 +443,32 @@ fn writeStructHelp(comptime T: type, writer: *std.Io.Writer) std.Io.Writer.Error
                 }
                 if (!isBoolLike(field.type)) try writer.print(" <{s}>", .{fieldValueName(T, field.name)});
                 if (fieldHelp(T, field.name)) |help| try writer.print("\t{s}", .{help});
+                if (comptime valueEnum(field.type)) |Enum| {
+                    try writer.writeAll(" (one of ");
+                    try writeEnumValues(Enum, writer);
+                    try writer.writeByte(')');
+                }
                 try writeDefault(field, writer);
                 try writer.writeByte('\n');
             }
         }
+    }
+}
+
+// Enums document their accepted spellings instead of the Zig type name,
+// which is unreadable for anonymous enums.
+fn valueEnum(comptime T: type) ?type {
+    return switch (@typeInfo(T)) {
+        .optional => |optional| valueEnum(optional.child),
+        .@"enum" => T,
+        else => null,
+    };
+}
+
+fn writeEnumValues(comptime Enum: type, writer: *std.Io.Writer) std.Io.Writer.Error!void {
+    inline for (std.meta.fields(Enum), 0..) |field, index| {
+        if (index != 0) try writer.writeAll(", ");
+        try writer.writeAll(field.name);
     }
 }
 
@@ -866,6 +894,16 @@ test "defaults render in command-line syntax" {
     try std.testing.expect(std.mem.indexOf(u8, help, "(default: out.txt)") != null);
     try std.testing.expect(std.mem.indexOf(u8, help, "(default: null)") != null);
     try std.testing.expect(std.mem.indexOf(u8, help, "(default: safe)") != null);
+}
+
+test "enum arguments and options list their possible values" {
+    var output: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer output.deinit();
+    try writeHelp(DefaultArgs, &output.writer, .{});
+    const help = output.writer.buffered();
+    try std.testing.expect(std.mem.indexOf(u8, help, "<mode>\tone of fast, safe") != null);
+    try std.testing.expect(std.mem.indexOf(u8, help, "--mode <mode> (one of fast, safe) (default: safe)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, help, "__enum") == null);
 }
 
 const NamedCommands = union(enum) {
