@@ -90,6 +90,25 @@ A custom scalar-like type can implement:
 pub fn parseZyra(raw: []const u8) !@This() { ... }
 ```
 
+### Generated help
+
+Zyra is able to generate a help string with type and multi choice. Here the result from the example :
+
+```bash
+$ zig build run -- mine set --help
+Usage: naval_fate mine set [options] [arguments]
+
+Arguments:
+  <x>   i32
+  <y>   i32
+  <kind>        one of moored, drifting (default: null)
+
+Options:
+  -x <x>
+  -y <y>
+  --kind <kind> (one of moored, drifting) (default: null)
+```
+
 ## Build
 
 ```sh
