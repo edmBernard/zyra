@@ -33,6 +33,33 @@ named value (`program --target 42` or `program -t 42`). A field without a Zig
 default is required. A defaulted field may be omitted, and `?T = null` represents
 an optional value with no fallback value.
 
+## Installation
+
+Add Zyra to a Zig project with `zig fetch`:
+
+```sh
+zig fetch --save git+https://github.com/edmBernard/zyra.git
+```
+
+Then import the dependency module from your `build.zig`:
+
+```zig
+const zyra = b.dependency("zyra", .{
+    .target = target,
+    .optimize = optimize,
+});
+
+const exe = b.addExecutable(.{
+    .name = "my-app",
+    .root_module = b.createModule(.{
+        .root_source_file = b.path("src/main.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{.{ .name = "zyra", .module = zyra.module("zyra") }},
+    }),
+});
+```
+
 ## Inference
 
 - A one-character field such as `b` gets `-b`.
