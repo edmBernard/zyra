@@ -117,6 +117,31 @@ A custom scalar-like type can implement:
 pub fn parseZyra(raw: []const u8) !@This() { ... }
 ```
 
+### Validation
+
+A field can carry a `validate` hook in its metadata. It receives the parsed
+value (the child type for `?T` fields) and returns `null` to accept it, or a
+message to reject it:
+
+```zig
+const Args = struct {
+    variant: u32,
+
+    pub const zyra = .{
+        .fields = .{ .variant = .{ .validate = oneToNine } },
+    };
+
+    fn oneToNine(value: u32) ?[]const u8 {
+        return if (value < 1 or value > 9) "must be between 1 and 9" else null;
+    }
+};
+```
+
+A rejected value makes `parse` return `error.InvalidValue`. The message is
+stored in `Diagnostic.reason`, and `writeDiagnostic` renders it as
+`invalid value '10' for 'variant': must be between 1 and 9`. Hooks run only on
+values given on the command line, never on defaults, and flags cannot have one.
+
 ### Generated help
 
 Zyra is able to generate a help string with type and multi choice. Here the result from the example :

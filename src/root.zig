@@ -17,6 +17,8 @@ pub const Diagnostic = struct {
     arg_index: usize,
     token: ?[]const u8 = null,
     subject: ?[]const u8 = null,
+    /// Explanation returned by a field's `validate` hook, if one rejected the value.
+    reason: ?[]const u8 = null,
 };
 
 pub const ParseOptions = struct {
@@ -153,9 +155,7 @@ fn parseStruct(
                                 i += 1;
                                 break :value tokens[i];
                             };
-                            @field(result, name) = parseValue(FieldType, raw) catch {
-                                return fail(options, error.InvalidValue, base_index + i, raw, name);
-                            };
+                            @field(result, name) = try parseField(T, name, raw, base_index + i, options);
                         }
                         seen[field_index] = true;
                         break :long_match;
@@ -192,10 +192,7 @@ fn parseStruct(
                                 return fail(options, error.MissingValue, base_index + i, token, name);
                             }
                             i += 1;
-                            const raw = tokens[i];
-                            @field(result, name) = parseValue(FieldType, raw) catch {
-                                return fail(options, error.InvalidValue, base_index + i, raw, name);
-                            };
+                            @field(result, name) = try parseField(T, name, tokens[i], base_index + i, options);
                         }
                         seen[field_index] = true;
                         break :short_match;
@@ -212,11 +209,9 @@ fn parseStruct(
 
         var assigned = false;
         positional_match: {
-            inline for (info.field_names, info.field_types, 0..) |name, FieldType, field_index| {
+            inline for (info.field_names, 0..) |name, field_index| {
                 if (fieldIsPositional(T, name) and !seen[field_index]) {
-                    @field(result, name) = parseValue(FieldType, token) catch {
-                        return fail(options, error.InvalidValue, base_index + i, token, name);
-                    };
+                    @field(result, name) = try parseField(T, name, token, base_index + i, options);
                     seen[field_index] = true;
                     assigned = true;
                     break :positional_match;
@@ -234,6 +229,43 @@ fn parseStruct(
         }
     }
     return result;
+}
+
+// Parses one field value and applies its optional `validate` hook. The hook
+// receives the non-optional value type, since a supplied value is never null.
+fn parseField(
+    comptime T: type,
+    comptime name: []const u8,
+    raw: []const u8,
+    arg_index: usize,
+    options: ParseOptions,
+) ParseError!@FieldType(T, name) {
+    const Value = NonOptional(@FieldType(T, name));
+    const value = parseValue(Value, raw) catch {
+        return fail(options, error.InvalidValue, arg_index, raw, name);
+    };
+    if (comptime fieldValidator(T, name)) |validator| {
+        if (validator(value)) |reason| {
+            if (options.diagnostic) |diagnostic| {
+                diagnostic.* = .{
+                    .kind = error.InvalidValue,
+                    .arg_index = arg_index,
+                    .token = raw,
+                    .subject = name,
+                    .reason = reason,
+                };
+            }
+            return error.InvalidValue;
+        }
+    }
+    return value;
+}
+
+fn NonOptional(comptime T: type) type {
+    return switch (@typeInfo(T)) {
+        .optional => |optional| optional.child,
+        else => T,
+    };
 }
 
 fn parseValue(comptime T: type, raw: []const u8) error{InvalidValue}!T {
@@ -307,7 +339,10 @@ pub fn writeDiagnostic(diagnostic: Diagnostic, writer: *std.Io.Writer) std.Io.Wr
         error.UnknownOption => try writer.print("unknown option '{?s}'", .{diagnostic.token}),
         error.UnknownCommand => try writer.print("unknown command '{?s}'", .{diagnostic.token}),
         error.MissingValue => try writer.print("option '{?s}' requires a value", .{diagnostic.token}),
-        error.InvalidValue => try writer.print("invalid value '{?s}' for '{?s}'", .{ diagnostic.token, diagnostic.subject }),
+        error.InvalidValue => {
+            try writer.print("invalid value '{?s}' for '{?s}'", .{ diagnostic.token, diagnostic.subject });
+            if (diagnostic.reason) |reason| try writer.print(": {s}", .{reason});
+        },
         error.DuplicateArgument => try writer.print("argument '{?s}' was provided more than once", .{diagnostic.subject}),
         error.UnexpectedPositional => try writer.print("unexpected positional argument '{?s}'", .{diagnostic.token}),
         error.HelpRequested => try writer.writeAll("help requested"),
@@ -556,6 +591,17 @@ fn fieldHelp(comptime T: type, comptime field_name: []const u8) ?[]const u8 {
     return null;
 }
 
+fn fieldValidator(comptime T: type, comptime field_name: []const u8) ?*const fn (NonOptional(@FieldType(T, field_name))) ?[]const u8 {
+    if (@hasDecl(T, "zyra")) {
+        const config = T.zyra;
+        if (@hasField(@TypeOf(config), "fields") and @hasField(@TypeOf(config.fields), field_name)) {
+            const metadata = @field(config.fields, field_name);
+            if (@hasField(@TypeOf(metadata), "validate")) return metadata.validate;
+        }
+    }
+    return null;
+}
+
 fn fieldValueName(comptime T: type, comptime field_name: []const u8) []const u8 {
     if (@hasDecl(T, "zyra")) {
         const config = T.zyra;
@@ -663,6 +709,11 @@ fn validateFieldMetadata(comptime T: type) void {
     inline for (@typeInfo(@TypeOf(config.fields)).@"struct".field_names) |metadata_name| {
         if (!@hasField(T, metadata_name)) {
             @compileError("Zyra metadata references unknown field '" ++ metadata_name ++ "'");
+        }
+        if (@hasField(@TypeOf(@field(config.fields, metadata_name)), "validate") and
+            isBoolLike(@FieldType(T, metadata_name)))
+        {
+            @compileError("Zyra flag '" ++ metadata_name ++ "' cannot have a validate hook");
         }
     }
 }
@@ -936,4 +987,63 @@ test "command names and help can be customized" {
     const help = output.writer.buffered();
     try std.testing.expect(std.mem.indexOf(u8, help, "Usage: tool <command>") != null);
     try std.testing.expect(std.mem.indexOf(u8, help, "run\tRun the operation") != null);
+}
+
+const ValidatedArgs = struct {
+    width: u32,
+    variant: u8 = 1,
+    scale: ?f32 = null,
+
+    pub const zyra = .{
+        .fields = .{
+            .width = .{ .validate = nonZero },
+            .variant = .{ .validate = oneToNine },
+            .scale = .{ .validate = positiveScale },
+        },
+    };
+
+    fn nonZero(value: u32) ?[]const u8 {
+        return if (value == 0) "must be greater than 0" else null;
+    }
+
+    fn oneToNine(value: u8) ?[]const u8 {
+        return if (value < 1 or value > 9) "must be between 1 and 9" else null;
+    }
+
+    fn positiveScale(value: f32) ?[]const u8 {
+        return if (value <= 0) "must be positive" else null;
+    }
+};
+
+test "validate hooks accept valid values on every input path" {
+    const args = try parse(ValidatedArgs, &.{ "program", "640", "--variant=3", "--scale", "0.5" }, .{});
+    try std.testing.expectEqual(@as(u32, 640), args.width);
+    try std.testing.expectEqual(@as(u8, 3), args.variant);
+    try std.testing.expectApproxEqAbs(@as(f32, 0.5), args.scale.?, 0.0001);
+}
+
+test "validate hooks reject values with a diagnostic reason" {
+    var diagnostic: Diagnostic = undefined;
+    try std.testing.expectError(error.InvalidValue, parse(ValidatedArgs, &.{ "program", "0" }, .{
+        .diagnostic = &diagnostic,
+    }));
+    try std.testing.expectEqualStrings("width", diagnostic.subject.?);
+    try std.testing.expectEqualStrings("0", diagnostic.token.?);
+    try std.testing.expectEqualStrings("must be greater than 0", diagnostic.reason.?);
+
+    try std.testing.expectError(error.InvalidValue, parse(ValidatedArgs, &.{ "program", "1", "--variant", "10" }, .{}));
+    try std.testing.expectError(error.InvalidValue, parse(ValidatedArgs, &.{ "program", "1", "--scale", "-1" }, .{}));
+
+    var output: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer output.deinit();
+    try writeDiagnostic(diagnostic, &output.writer);
+    try std.testing.expectEqualStrings("invalid value '0' for 'width': must be greater than 0", output.writer.buffered());
+}
+
+test "parse failures carry no validation reason" {
+    var diagnostic: Diagnostic = undefined;
+    try std.testing.expectError(error.InvalidValue, parse(ValidatedArgs, &.{ "program", "abc" }, .{
+        .diagnostic = &diagnostic,
+    }));
+    try std.testing.expectEqual(@as(?[]const u8, null), diagnostic.reason);
 }
