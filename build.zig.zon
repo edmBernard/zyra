@@ -1,7 +1,7 @@
 .{
     .name = .zyra,
-    .version = "0.0.1",
-    .minimum_zig_version = "0.16.0",
+    .version = "0.0.2",
+    .minimum_zig_version = "0.17.0",
     .fingerprint = 0x595a868175327dac,
     .paths = .{
         "build.zig",

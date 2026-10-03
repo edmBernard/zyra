@@ -1,6 +1,6 @@
 # Zyra
 
-Zyra is an allocation-free, reflection-driven command-line parser for Zig 0.16.
+Zyra is an allocation-free, reflection-driven command-line parser for Zig 0.17.
 An ordinary struct defines options and positional arguments; a tagged union
 defines subcommands.
 
@@ -107,7 +107,7 @@ documents `ship`), and `writeHelpForProcess` is the `std.process.Init`
 convenience.
 
 `parse` accepts an existing `[]const []const u8` and does no allocation.
-`parseProcess` is a convenience for Zig 0.16's `std.process.Init`; acquiring
+`parseProcess` is a convenience for Zig 0.17's `std.process.Init`; acquiring
 cross-platform process arguments may allocate from `init.arena`, but the
 parsing pass still does not allocate.
 

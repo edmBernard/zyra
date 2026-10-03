@@ -22,7 +22,7 @@ pub fn build(b: *std.Build) void {
 
     const run_example = b.addRunArtifact(example);
     run_example.step.dependOn(b.getInstallStep());
-    if (b.args) |args| run_example.addArgs(args);
+    run_example.addPassthruArgs();
     const run_step = b.step("run", "Run the Naval Fate example");
     run_step.dependOn(&run_example.step);
 

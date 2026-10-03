@@ -87,10 +87,11 @@ fn parseUnion(
     }
 
     const command = tokens[0];
-    inline for (std.meta.fields(T)) |field| {
-        if (commandNameMatches(T, field.name, command)) {
-            const payload = try parseType(field.type, tokens[1..], base_index + 1, options);
-            return @unionInit(T, field.name, payload);
+    const info = @typeInfo(T).@"union";
+    inline for (info.field_names, info.field_types) |name, Payload| {
+        if (commandNameMatches(T, name, command)) {
+            const payload = try parseType(Payload, tokens[1..], base_index + 1, options);
+            return @unionInit(T, name, payload);
         }
     }
     if (options.auto_help and (std.mem.eql(u8, command, "--help") or std.mem.eql(u8, command, "-h")))
@@ -104,13 +105,13 @@ fn parseStruct(
     base_index: usize,
     options: ParseOptions,
 ) ParseError!T {
-    const fields = std.meta.fields(T);
+    const info = @typeInfo(T).@"struct";
     var result: T = undefined;
-    var seen: [fields.len]bool = @splat(false);
+    var seen: [info.field_names.len]bool = @splat(false);
 
-    inline for (fields) |field| {
-        if (comptime field.defaultValue()) |default| {
-            @field(result, field.name) = default;
+    inline for (info.field_names, info.field_types, info.field_attrs) |name, FieldType, attrs| {
+        if (comptime attrs.defaultValue(FieldType)) |default| {
+            @field(result, name) = default;
         }
     }
 
@@ -132,28 +133,28 @@ fn parseStruct(
             var matched = false;
 
             long_match: {
-                inline for (fields, 0..) |field, field_index| {
-                    if (fieldIsNamed(T, field.name) and fieldLongMatches(T, field.name, option_name)) {
+                inline for (info.field_names, info.field_types, 0..) |name, FieldType, field_index| {
+                    if (fieldIsNamed(T, name) and fieldLongMatches(T, name, option_name)) {
                         matched = true;
                         if (seen[field_index]) {
-                            return fail(options, error.DuplicateArgument, base_index + i, token, field.name);
+                            return fail(options, error.DuplicateArgument, base_index + i, token, name);
                         }
 
-                        if (isBoolLike(field.type)) {
+                        if (isBoolLike(FieldType)) {
                             if (attached_value != null) {
-                                return fail(options, error.InvalidValue, base_index + i, token, field.name);
+                                return fail(options, error.InvalidValue, base_index + i, token, name);
                             }
-                            @field(result, field.name) = flagValue(field.type);
+                            @field(result, name) = flagValue(FieldType);
                         } else {
                             const raw = attached_value orelse value: {
                                 if (i + 1 >= tokens.len) {
-                                    return fail(options, error.MissingValue, base_index + i, token, field.name);
+                                    return fail(options, error.MissingValue, base_index + i, token, name);
                                 }
                                 i += 1;
                                 break :value tokens[i];
                             };
-                            @field(result, field.name) = parseValue(field.type, raw) catch {
-                                return fail(options, error.InvalidValue, base_index + i, raw, field.name);
+                            @field(result, name) = parseValue(FieldType, raw) catch {
+                                return fail(options, error.InvalidValue, base_index + i, raw, name);
                             };
                         }
                         seen[field_index] = true;
@@ -177,23 +178,23 @@ fn parseStruct(
             var matched = false;
 
             short_match: {
-                inline for (fields, 0..) |field, field_index| {
-                    if (fieldIsNamed(T, field.name) and fieldShort(T, field.name) == option_name) {
+                inline for (info.field_names, info.field_types, 0..) |name, FieldType, field_index| {
+                    if (fieldIsNamed(T, name) and fieldShort(T, name) == option_name) {
                         matched = true;
                         if (seen[field_index]) {
-                            return fail(options, error.DuplicateArgument, base_index + i, token, field.name);
+                            return fail(options, error.DuplicateArgument, base_index + i, token, name);
                         }
 
-                        if (isBoolLike(field.type)) {
-                            @field(result, field.name) = flagValue(field.type);
+                        if (isBoolLike(FieldType)) {
+                            @field(result, name) = flagValue(FieldType);
                         } else {
                             if (i + 1 >= tokens.len) {
-                                return fail(options, error.MissingValue, base_index + i, token, field.name);
+                                return fail(options, error.MissingValue, base_index + i, token, name);
                             }
                             i += 1;
                             const raw = tokens[i];
-                            @field(result, field.name) = parseValue(field.type, raw) catch {
-                                return fail(options, error.InvalidValue, base_index + i, raw, field.name);
+                            @field(result, name) = parseValue(FieldType, raw) catch {
+                                return fail(options, error.InvalidValue, base_index + i, raw, name);
                             };
                         }
                         seen[field_index] = true;
@@ -211,10 +212,10 @@ fn parseStruct(
 
         var assigned = false;
         positional_match: {
-            inline for (fields, 0..) |field, field_index| {
-                if (fieldIsPositional(T, field.name) and !seen[field_index]) {
-                    @field(result, field.name) = parseValue(field.type, token) catch {
-                        return fail(options, error.InvalidValue, base_index + i, token, field.name);
+            inline for (info.field_names, info.field_types, 0..) |name, FieldType, field_index| {
+                if (fieldIsPositional(T, name) and !seen[field_index]) {
+                    @field(result, name) = parseValue(FieldType, token) catch {
+                        return fail(options, error.InvalidValue, base_index + i, token, name);
                     };
                     seen[field_index] = true;
                     assigned = true;
@@ -227,9 +228,9 @@ fn parseStruct(
         }
     }
 
-    inline for (fields, 0..) |field, field_index| {
-        if (field.defaultValue() == null and !seen[field_index]) {
-            return fail(options, error.MissingRequired, base_index + tokens.len, null, field.name);
+    inline for (info.field_names, info.field_attrs, 0..) |name, attrs, field_index| {
+        if (attrs.default_value_ptr == null and !seen[field_index]) {
+            return fail(options, error.MissingRequired, base_index + tokens.len, null, name);
         }
     }
     return result;
@@ -242,7 +243,7 @@ fn parseValue(comptime T: type, raw: []const u8) error{InvalidValue}!T {
         .int => std.fmt.parseInt(T, raw, 0) catch error.InvalidValue,
         .float => std.fmt.parseFloat(T, raw) catch error.InvalidValue,
         .@"enum" => std.meta.stringToEnum(T, raw) orelse error.InvalidValue,
-        .pointer => |pointer| if (pointer.size == .slice and pointer.child == u8 and pointer.is_const)
+        .pointer => |pointer| if (pointer.size == .slice and pointer.child == u8 and pointer.attrs.@"const")
             raw
         else
             error.InvalidValue,
@@ -363,11 +364,12 @@ fn writeHelpForArgsImpl(
 
 fn writeHelpWalk(comptime T: type, tokens: anytype, writer: *std.Io.Writer) std.Io.Writer.Error!void {
     if (@typeInfo(T) == .@"union" and tokens.len > 0) {
-        inline for (std.meta.fields(T)) |field| {
-            if (commandNameMatches(T, field.name, tokens[0])) {
+        const info = @typeInfo(T).@"union";
+        inline for (info.field_names, info.field_types) |name, Payload| {
+            if (commandNameMatches(T, name, tokens[0])) {
                 try writer.writeByte(' ');
-                try writeCliName(writer, commandDisplayName(T, field.name));
-                return writeHelpWalk(field.type, tokens[1..], writer);
+                try writeCliName(writer, commandDisplayName(T, name));
+                return writeHelpWalk(Payload, tokens[1..], writer);
             }
         }
     }
@@ -385,10 +387,10 @@ fn writeHelpBody(comptime T: type, writer: *std.Io.Writer) std.Io.Writer.Error!v
             try writer.writeAll(" <command> [options] [arguments]\n");
             if (schemaAbout(T)) |about| try writer.print("\n{s}\n", .{about});
             try writer.writeAll("\nCommands:\n");
-            inline for (std.meta.fields(T)) |field| {
+            inline for (@typeInfo(T).@"union".field_names) |name| {
                 try writer.writeAll("  ");
-                try writeCliName(writer, commandDisplayName(T, field.name));
-                if (commandHelp(T, field.name)) |help| try writer.print("\t{s}", .{help});
+                try writeCliName(writer, commandDisplayName(T, name));
+                if (commandHelp(T, name)) |help| try writer.print("\t{s}", .{help});
                 try writer.writeByte('\n');
             }
         },
@@ -401,25 +403,25 @@ fn programName(comptime T: type, options: HelpOptions) []const u8 {
 }
 
 fn writeStructHelp(comptime T: type, writer: *std.Io.Writer) std.Io.Writer.Error!void {
-    const fields = std.meta.fields(T);
+    const info = @typeInfo(T).@"struct";
     const has_positionals = comptime blk: {
         var value = false;
-        for (fields) |field| value = value or fieldIsPositional(T, field.name);
+        for (info.field_names) |name| value = value or fieldIsPositional(T, name);
         break :blk value;
     };
     if (has_positionals) {
         try writer.writeAll("\nArguments:\n");
-        inline for (fields) |field| {
-            if (fieldIsPositional(T, field.name)) {
-                try writer.print("  <{s}>\t", .{fieldValueName(T, field.name)});
-                if (comptime valueEnum(field.type)) |Enum| {
+        inline for (info.field_names, info.field_types, info.field_attrs) |name, FieldType, attrs| {
+            if (fieldIsPositional(T, name)) {
+                try writer.print("  <{s}>\t", .{fieldValueName(T, name)});
+                if (comptime valueEnum(FieldType)) |Enum| {
                     try writer.writeAll("one of ");
                     try writeEnumValues(Enum, writer);
                 } else {
-                    try writer.writeAll(@typeName(field.type));
+                    try writer.writeAll(@typeName(FieldType));
                 }
-                if (fieldHelp(T, field.name)) |help| try writer.print(" - {s}", .{help});
-                try writeDefault(field, writer);
+                if (fieldHelp(T, name)) |help| try writer.print(" - {s}", .{help});
+                try writeDefault(FieldType, attrs, writer);
                 try writer.writeByte('\n');
             }
         }
@@ -427,28 +429,28 @@ fn writeStructHelp(comptime T: type, writer: *std.Io.Writer) std.Io.Writer.Error
 
     const has_options = comptime blk: {
         var value = false;
-        for (fields) |field| value = value or fieldIsNamed(T, field.name);
+        for (info.field_names) |name| value = value or fieldIsNamed(T, name);
         break :blk value;
     };
     if (has_options) {
         try writer.writeAll("\nOptions:\n");
-        inline for (fields) |field| {
-            if (fieldIsNamed(T, field.name)) {
+        inline for (info.field_names, info.field_types, info.field_attrs) |name, FieldType, attrs| {
+            if (fieldIsNamed(T, name)) {
                 try writer.writeAll("  ");
-                if (fieldShort(T, field.name)) |short| try writer.print("-{c}", .{short});
-                if (fieldLong(T, field.name)) |long| {
-                    if (fieldShort(T, field.name) != null) try writer.writeAll(", ");
+                if (fieldShort(T, name)) |short| try writer.print("-{c}", .{short});
+                if (fieldLong(T, name)) |long| {
+                    if (fieldShort(T, name) != null) try writer.writeAll(", ");
                     try writer.writeAll("--");
                     try writeCliName(writer, long);
                 }
-                if (!isBoolLike(field.type)) try writer.print(" <{s}>", .{fieldValueName(T, field.name)});
-                if (fieldHelp(T, field.name)) |help| try writer.print("\t{s}", .{help});
-                if (comptime valueEnum(field.type)) |Enum| {
+                if (!isBoolLike(FieldType)) try writer.print(" <{s}>", .{fieldValueName(T, name)});
+                if (fieldHelp(T, name)) |help| try writer.print("\t{s}", .{help});
+                if (comptime valueEnum(FieldType)) |Enum| {
                     try writer.writeAll(" (one of ");
                     try writeEnumValues(Enum, writer);
                     try writer.writeByte(')');
                 }
-                try writeDefault(field, writer);
+                try writeDefault(FieldType, attrs, writer);
                 try writer.writeByte('\n');
             }
         }
@@ -466,14 +468,18 @@ fn valueEnum(comptime T: type) ?type {
 }
 
 fn writeEnumValues(comptime Enum: type, writer: *std.Io.Writer) std.Io.Writer.Error!void {
-    inline for (std.meta.fields(Enum), 0..) |field, index| {
+    inline for (@typeInfo(Enum).@"enum".field_names, 0..) |name, index| {
         if (index != 0) try writer.writeAll(", ");
-        try writer.writeAll(field.name);
+        try writer.writeAll(name);
     }
 }
 
-fn writeDefault(comptime field: std.builtin.Type.StructField, writer: *std.Io.Writer) std.Io.Writer.Error!void {
-    if (comptime field.defaultValue()) |default| {
+fn writeDefault(
+    comptime FieldType: type,
+    comptime attrs: std.lang.Type.Struct.FieldAttributes,
+    writer: *std.Io.Writer,
+) std.Io.Writer.Error!void {
+    if (comptime attrs.defaultValue(FieldType)) |default| {
         try writer.writeAll(" (default: ");
         try writeDefaultValue(default, writer);
         try writer.writeByte(')');
@@ -611,20 +617,21 @@ fn commandNameMatches(comptime T: type, comptime field_name: []const u8, input: 
 fn validateSchema(comptime T: type) void {
     switch (@typeInfo(T)) {
         .@"struct" => {
-            inline for (std.meta.fields(T)) |field| {
-                validateValueType(field.type);
-                if (field.defaultValue() == null and !fieldIsNamed(T, field.name) and !fieldIsPositional(T, field.name))
-                    @compileError("Zyra field '" ++ field.name ++ "' is required but neither named nor positional");
+            const info = @typeInfo(T).@"struct";
+            inline for (info.field_names, info.field_types, info.field_attrs) |name, FieldType, attrs| {
+                validateValueType(FieldType);
+                if (attrs.default_value_ptr == null and !fieldIsNamed(T, name) and !fieldIsPositional(T, name))
+                    @compileError("Zyra field '" ++ name ++ "' is required but neither named nor positional");
             }
             validateFieldMetadata(T);
             validateAliases(T);
         },
         .@"union" => |union_info| {
             if (union_info.tag_type == null) @compileError("Zyra subcommands require a tagged union: " ++ @typeName(T));
-            inline for (union_info.fields) |field| {
-                switch (@typeInfo(field.type)) {
-                    .@"struct", .@"union" => validateSchema(field.type),
-                    else => @compileError("Zyra command payload must be a struct or tagged union: " ++ field.name),
+            inline for (union_info.field_names, union_info.field_types) |name, Payload| {
+                switch (@typeInfo(Payload)) {
+                    .@"struct", .@"union" => validateSchema(Payload),
+                    else => @compileError("Zyra command payload must be a struct or tagged union: " ++ name),
                 }
             }
             validateCommandMetadata(T);
@@ -639,7 +646,7 @@ fn validateValueType(comptime T: type) void {
         .bool, .int, .float, .@"enum" => {},
         .optional => |optional| validateValueType(optional.child),
         .pointer => |pointer| {
-            if (!(pointer.size == .slice and pointer.child == u8 and pointer.is_const))
+            if (!(pointer.size == .slice and pointer.child == u8 and pointer.attrs.@"const"))
                 @compileError("unsupported Zyra field type: " ++ @typeName(T));
         },
         .@"struct", .@"union", .@"opaque" => {
@@ -653,34 +660,33 @@ fn validateFieldMetadata(comptime T: type) void {
     if (!@hasDecl(T, "zyra")) return;
     const config = T.zyra;
     if (!@hasField(@TypeOf(config), "fields")) return;
-    inline for (std.meta.fields(@TypeOf(config.fields))) |metadata_field| {
-        if (!@hasField(T, metadata_field.name)) {
-            @compileError("Zyra metadata references unknown field '" ++ metadata_field.name ++ "'");
+    inline for (@typeInfo(@TypeOf(config.fields)).@"struct".field_names) |metadata_name| {
+        if (!@hasField(T, metadata_name)) {
+            @compileError("Zyra metadata references unknown field '" ++ metadata_name ++ "'");
         }
     }
 }
 
 fn validateCommandMetadata(comptime T: type) void {
     if (!@hasDecl(T, "zyra")) return;
-    const config = T.zyra;
-    if (!@hasField(@TypeOf(config), "commands")) return;
-    inline for (std.meta.fields(@TypeOf(config.commands))) |metadata_field| {
-        if (!@hasField(T, metadata_field.name)) {
-            @compileError("Zyra metadata references unknown command '" ++ metadata_field.name ++ "'");
+    if (!@hasField(@TypeOf(T.zyra), "commands")) return;
+    inline for (@typeInfo(@TypeOf(T.zyra.commands)).@"struct".field_names) |metadata_name| {
+        if (!@hasField(T, metadata_name)) {
+            @compileError("Zyra metadata references unknown command '" ++ metadata_name ++ "'");
         }
     }
 }
 
 fn validateAliases(comptime T: type) void {
-    const fields = std.meta.fields(T);
-    inline for (fields, 0..) |left, left_index| {
-        if (!fieldIsNamed(T, left.name)) continue;
-        inline for (fields[left_index + 1 ..]) |right| {
-            if (!fieldIsNamed(T, right.name)) continue;
-            if (fieldShort(T, left.name) != null and fieldShort(T, left.name) == fieldShort(T, right.name))
+    const names = @typeInfo(T).@"struct".field_names;
+    inline for (names, 0..) |left, left_index| {
+        if (!fieldIsNamed(T, left)) continue;
+        inline for (names[left_index + 1 ..]) |right| {
+            if (!fieldIsNamed(T, right)) continue;
+            if (fieldShort(T, left) != null and fieldShort(T, left) == fieldShort(T, right))
                 @compileError("duplicate Zyra short option in " ++ @typeName(T));
-            const left_long = fieldLong(T, left.name);
-            const right_long = fieldLong(T, right.name);
+            const left_long = fieldLong(T, left);
+            const right_long = fieldLong(T, right);
             if (left_long != null and right_long != null and cliNameEql(left_long.?, right_long.?))
                 @compileError("duplicate Zyra long option in " ++ @typeName(T));
         }
@@ -688,10 +694,10 @@ fn validateAliases(comptime T: type) void {
 }
 
 fn validateCommandAliases(comptime T: type) void {
-    const fields = std.meta.fields(T);
-    inline for (fields, 0..) |left, left_index| {
-        inline for (fields[left_index + 1 ..]) |right| {
-            if (cliNameEql(commandDisplayName(T, left.name), commandDisplayName(T, right.name)))
+    const names = @typeInfo(T).@"union".field_names;
+    inline for (names, 0..) |left, left_index| {
+        inline for (names[left_index + 1 ..]) |right| {
+            if (cliNameEql(commandDisplayName(T, left), commandDisplayName(T, right)))
                 @compileError("duplicate Zyra command name in " ++ @typeName(T));
         }
     }
